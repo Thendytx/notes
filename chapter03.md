@@ -20,7 +20,7 @@
             2. ngx_pool_data_t
 
                     typedef struct {
-                        u_char               *last; // 指向小块内存已分配末地址的下一个地址
+                        u_char               *last; // 指向小块内存已分配末地址的下一个地址；可分配首地址
                         u_char               *end;  // 指向小块内存可分配地址的末地址的下一个地址
                         ngx_pool_t           *next;
                         ngx_uint_t            failed;
@@ -40,7 +40,9 @@
                     };
 
         2. 内存池初始结构
-            ngx_pool_t + 小块内存
+
+            ngx_pool_t + 小块内存<br>
+            ![](nginx初始化后内存池结构.jpg)
             
     2. 内存池创建
         1. ngx_create_pool函数
@@ -48,17 +50,21 @@
                 // 返回创建的内存池地址，size为内存池每个内存块大小，log为打印日志
                 ngx_pool_t * ngx_create_pool(size_t size, ngx_log_t *log){
                     ngx_pool_t  *p;
+
                     // 申请内存，如果系统支持内存地址对齐，则默认申请16字节对齐地址
                     p = ngx_memalign(NGX_POOL_ALIGNMENT, size, log);
                     if (p == NULL) return NULL;
+
                     // 初始化内存池
-                    p->d.last = (u_char *) p + sizeof(ngx_pool_t);
-                    p->d.end = (u_char *) p + size;
+                    p->d.last = (u_char *) p + sizeof(ngx_pool_t); // 这是指向了ngx_pool_t结构体之后
+                    p->d.end = (u_char *) p + size; // size是内存块的大小，这就是指向了第二个块的首地址
                     p->d.next = NULL;
                     p->d.failed = 0;
+
                     // 计算内存池中每个内存块最大可以分配的内存
                     size = size - sizeof(ngx_pool_t);
                     p->max = (size < NGX_MAX_ALLOC_FROM_POOL) ? size : NGX_MAX_ALLOC_FROM_POOL;
+
                     p->current = p;
                     p->chain = NULL;
                     p->large = NULL;
@@ -68,8 +74,9 @@
                 }
 
     3. 从内存池申请内存
+
         ngx_palloc：获取内存但不初始化；首地址内存对齐，为4或8的倍数<br>
-        ngx_pcalloc：封装pclloc，获取内存并初始化<br>
+        ngx_pcalloc：封装palloc，获取内存并初始化<br>
         ngx_pnalloc：获取内存但不考虑对齐<br>
         1. ngx_palloc
 
@@ -85,7 +92,7 @@
                 <br>
                 每次新申请内存，就增加原有内存块的失败次数，当某内存块失败超过4次时，不再尝试从该内存块分配内存。
                 <br>
-                问题：这里不断增加最终导致溢出吗？
+                ##### 问题：这里不断增加会最终导致溢出吗？还是说加到5就不加了？
                 <br>
                 函数声明：<br>static void * ngx_palloc_small(ngx_pool_t *pool, size_t size, ngx_uint_t align);<br>
                 核心逻辑代码：<br>
@@ -130,12 +137,13 @@
                         n = 0;
                         for (large = pool->large; large; large = large->next) {
                             if (large->alloc == NULL) { 
-                                // 这是因为nginx提供了释放大块内存的接口，之前分配的大块内存有可能已经释放了
+                                // 这是因为nginx提供了释放大块内存的接口，之前分配的大块内存有可能已经释放了，现在就把新申请的内存加入到这个链表中
                                 large->alloc = p;
                                 return p;
                             }
                             if (n++ > 3) break;
                             // 这里的意思是，后面可能可用的大块内存的节点就不管了？有点好奇什么时候内存池会被释放了。
+                            // emm就先这样吧，说不定编者认为不是核心逻辑？
                         }
                         // 直接从内存池中申请大块内存管理的链表节点
                         large = ngx_palloc_small(pool, sizeof(ngx_pool_large_t), 1);
@@ -150,10 +158,10 @@
                         return p;
                     }
         2. nginx内存池基本结构
+
             ![nginx_mempool_structure](nginx内存池基本结构.jpg)
     4. 释放内存
         1. 大块内存释放
-            
             1. ngx_pfree
 
                     ngx_int_t ngx_pfree(ngx_pool_t *pool, void *p){
@@ -164,6 +172,7 @@
                             if (p == l->alloc) {
                                 ngx_free(l->alloc);
                                 l->alloc = NULL;
+                                // 没有删除链表节点，只是把真正的大块内存释放了
                                 return NGX_OK;
                             }
                         }
@@ -171,6 +180,7 @@
                     }
         2. 内存池释放
             1. 逻辑
+
                 首先查看内存池是否挂载清理函数，如果是，则逐一调用链表中的所有回调函数，之后再释放大块内存，最后释放内存池中的内存块。
             2. ngx_destory_pool
 
@@ -194,12 +204,15 @@
                     }
 4. nginx共享内存
     1. 共享内存基础知识
+
         进程是计算机系统资源分配的最小单位。每个进程都有自己的资源，彼此隔离。内存是进程的私有资源，进程的内存是虚拟内存，在使用时由操作系统分配物理内存，并将虚拟内存映射到物理内存上。之后进程就可以使用这块物理内存。正常情况下，各个进程的内存相互隔离。共享内存就是让多个进程将自己的某块虚拟内存映射到同一块物理内存，这样多个进程都可以读/写这块内存，实现进程间的通信。<br>
         Linux提供了几个系统调用函数来创建共享内存或者释放共享内存，例如mmap、munmap等。<br>
     2. nginx共享内存概述
+
         Nginx使用共享内存实现进程间通信。<br>
         除了使用原子操作外，有时需要通过锁来保证每次只有一个进程访问。通常，Nginx共享内存由主进程负责创建，主进程记录共享内存的地址。派生（Fork）子进程时，子进程可以继承父进程记录共享内存地址的变量，进而访问共享内存。
     3. 共享内存的创建及销毁
+
         Linux系统下创建共享内存可以使用mmap或者shmget方法。Nginx基于这两个系统调用方法封装了ngx_shm_alloc接口以及ngx_shm_free接口。
         <br>
         nginx根据预定义的宏确认具体系统调用的使用
@@ -242,6 +255,7 @@
                     }
 
         2. 互斥锁
+
             nginx使用互斥锁防止同时读写某块内存<br>
             ![nginx互斥锁](nginx%E4%BA%92%E6%96%A5%E9%94%81.jpg)
             1. 互斥锁实现概述
@@ -258,6 +272,7 @@
                             }ngx_shmtx_sh_t;
 
                     2. ngx_shmtx_t
+
                             // 每个进程使用该结构体进行加锁、释放锁等操作
                             typedef struct {
                                 ngx_atomic_t  *lock;  // 指向ngx_shmtx_sh_t结构体lock字段
@@ -266,6 +281,7 @@
 
                     3. ngx_int_t ngx_shmtx_create(ngx_shmtx_t *mtx, ngx_shmtx_sh_t *addr,
                                                     u_char *name);
+
                             // 创建锁
                             // mtx是进程创建的、用于存储锁的变量，addr是共享内存块中用于标识锁的变量
                             ngx_int_t ngx_shmtx_create(ngx_shmtx_t *mtx,ngx_shmtx_sh_t *addr,u_char *name){
@@ -276,18 +292,22 @@
                             }
                             
                     4. void ngx_shmtx_destroy(ngx_shmtx_t *mtx);
+
                             // 销毁锁
                             // 如果支持信号量，这里要销毁信号量
                     
                     5. ngx_uint_t ngx_shmtx_trylock(ngx_shmtx_t *mtx);
+
                             // 尝试加锁，失败直接返回
                             // 通过原子变量的比较交换即可（将共享内存块中原子变量的值改为当前进程pid），如果交换成功，则意味着成功加锁，否则没有获取到锁。
 
                     6. void ngx_shmtx_lock(ngx_shmtx_t *mtx);
+
                             // 加锁。直到成功获取锁后才返回
                             // 首先尝试获取锁，尝试一定次数后（尝试次数由ngx_shmtx_t结构体spin字段决定），则让出CPU，然后继续尝试加锁。如果系统支持信号量，则可以通过信号量优化这个过程。
 
                     7. void ngx_shmtx_unlock(ngx_shmtx_t *mtx);
+
                             // 释放锁
                             // 通过原子操作，将共享内存块中的原子变量的值改为0即可
         3. 共享内存管理
@@ -300,6 +320,9 @@
                             uintptr_t         slab;
                             ngx_slab_page_t  *next;
                             uintptr_t         prev;
+                            // uintptr_t 是一个无符号整数类型，它的属性是，任何指向void的有效指针都可以转换为此类型，然后再转换回指针为void，结果将与原始指针相比较
+                            // 定义在stdint.h中 typedef unsigned int uintptr_t;
+                            // 使用这个类型是为了考虑到源码的跨平台编译。该类型始终与平台的地址长度相同。
                         };
                         // 用于管理内存页，记录内存页使用的各项信息
 
@@ -342,8 +365,11 @@
                     // 释放pool分配的某个内存
                     void ngx_slab_free(ngx_slab_pool_t *pool, void *p);
             3. 核心思想
+
                 假定我们的系统是64位系统，系统页大小为4KB，Nginx默认页大小与系统页大小一致，也为4KB。
-                1. 共享内存初始化后结构<br>![共享内存初始化后结构](共享内存初始化后结构.jpg)
+                1. 共享内存初始化后结构
+                
+                    ![共享内存初始化后结构](共享内存初始化后结构.jpg)
 
                     1. ngx_slab_pool_t：用于管理整块共享内存
                     2. ngx_slab_page_t结构体有9个规格种类，也就是说有9种规格内存块，此处仅仅使用next字段组成链表。
@@ -360,23 +386,27 @@
                         2. 页内存：4096Byte
                     2. 1页内存只能划分为1种规格的内存；nginx用bitmap确定内存页中内存块的使用情况
                         1. 小块内存
+
                             8B大小的内存块，每页可以分配512个，那么需要用前8个内存块即512bit作为bitmap。<br>
                             其他小块内存情况类似
                         2. 精确内存
+
                             64B，则有64个内存块，需要64位做bitmap<br>
                             ngx_slab_page_s结构体的slab字段是64bit，使用该字段存储bitmap。<br>
                             这就是精确内存块大小的确定，即该字段作为bitmap时对应的内存块大小。
                         3. 大块内存
+
                             使用slab字段的前32位存储bitmap。
                 3. 链表
                     1. 对于每种规格的内存块，建立一个链表进行链接。链表的头部链表是ngx_slab_pool_t中的ngx_slab_page_s结构体。<br>
                     ps：这里可能有问题。应该不是ngx_slab_pool_t中的ngx_slab_page_s，而是它后面的9个ngx_slab_page_s结构体。这9个结构体分别是一种规格的链表的页管理结构体的头。
                     2. 对于空闲内存页，使用free字段将空闲页链接起来。需要整页内存时，就遍历这个链表。<br>
-                4. 共享内存管理结构图
+                4. 共享内存块结构图
                     <br>
-                    ![共享内存管理结构图](共享内存管理结构图.jpg)
+                    ![共享内存块结构图](共享内存块结构图.jpg)
                     <br>
                     1. 双向链表如何理解
+
                         猜想：通过prev字段连接到前一个结构体。该字段为64bit，足够用于存储地址。需要使用时转换为对应类型的指针即可。<br>
                         好起来了，后面讲这个了
                     2. 空闲页通过free字段连接成一个双向链表，连续的内存页放到一起
@@ -394,14 +424,65 @@
                                 4. 通过ngx_slab_page_s结构体，可以知道当前内存页使用的情况。如果这个内存页已经分配完，释放一个内存块后，可以将其挂载到对应规格的内存管理链表中（1页内存全部使用后会将其从链表中移除，这样就不用再进行分配）；如果这个内存页全部释放，还可以将其挂载到空闲内存页链表中。
                 6. 大于半页的内存的管理
                     1. 申请
+
                         从空闲页链表中找到符合要求的连续内存页。<br>
                         对于申请多个整页的情况，Nginx需要提供连续的内存页以供使用，这些页对应的页管理结构也是连续的。对于第一个内存页，其页管理结构ngx_slab_page_s的slab字段的第一位设置为1，后31bit记录连续页的个数，next、prev字段置为0。后续页面的slab字段置为0xFFFFFFFF，next字段以及prev字段置为0。
-                    2. 释放内存要尽可能将其前后几个内存页连接到一起，形成一个连续的空闲内存块。<br>
-                        ## 下面没怎么懂
+                    2. 释放内存要尽可能将其前后几个内存页连接到一起，形成一个连续的空闲内存块。
+
+                        ### 下面没怎么懂
                         对于空闲的整页，我们需要将连续的空闲页整合到一起，这样才可以分配大块内存。此时，首个内存页管理结构ngx_slab_page_s的slab字段记录连续内存页的页数，next以及prev字段与其他空闲页构成双向链表。最后一个内存页的页管理结构的slab字段为0，next字段为0，prev字段指向内存块第一个内存页的页管理结构。中间内存页的页管理结构的字段都为0。
-                        ## 目前的理解
+                        ### 目前的理解
                         首个内存页管理结构ngx_slab_page_s指的是pages中的结构，而不是pool中的free或9个作为链表头的结构中的任何一个。
                         1. 当Nginx释放内存页时，我们找到这个页前面页的页管理结构，判断其是否空闲，如果空闲并且其前面也有很多空闲页，可以通过其页面管理结构的prev字段，找到整个空闲内存块，进而与待释放的内存页链接到一起。对于这个内存页后面的内存页也是如此。
                         2. 释放内存页时将其与前面的空闲内存页链接的核心代码
-
                             
+                                if (page > pool->pages) {
+                                    // join是释放内存页前面一页的页管理结构，page是待释放页面的页管理结构
+                                    join = page - 1;
+                                    // 判断是否是整页类型的内存
+                                    if (ngx_slab_page_type(join) == NGX_SLAB_PAGE) {
+                                        // 如果这个内存页是前面多个空闲页的最后一页，找到第一页
+                                        if (join->slab == NGX_SLAB_PAGE_FREE) {
+                                            join = ngx_slab_page_prev(join);
+                                        }
+                                        // next不为空，表明这个页在空闲页链表中
+                                        if (join->next != NULL) {
+                                            // 将这两个页合并成一个大的空闲页内存块
+                                            pages += join->slab;
+                                            join->slab += page->slab;
+                                            ...
+                                        }
+                                    }
+                                }
+                                // 有一说一，这里还是不太明白。
+                                // pages是什么？此前没有出现过，如果是pool->pages的话也不太合适
+                                // page->slab是什么？如果按照之前说的，不论这是最后一个内存页，还是中间的内存页，它的页管理结构的slab都是0。当然这里也可能是1，因为此前将其视为一个单独的空闲内存页，这样的话就确实合理了。
+            4. 共享内存使用
+                1. 直接调用**ngx_shm_alloc**创建共享内存块，自行创建锁并管理共享内存空间。
+                    1. 主要用于请求计数等简单场景，可以参考ngx_event_module_init函数
+                2. 使用Nginx提供的**ngx_shared_memory_add**函数创建共享内存块，使用ngx_slab_pool_t进行共享内存管理。
+                    1. 例子
+
+                        ngx_stream_limit_conn_module限制同一客户端的并发请求数，每当新的客户端发起请求时，需要从共享内存块中分配特定大小的内存，以便记录该客户端的请求数。
+                    2. 结构体与API
+                        1. 源码
+
+                                typedef struct ngx_shm_zone_s  ngx_shm_zone_t;
+                                struct ngx_shm_zone_s {
+                                    void                    *data;
+                                    ngx_shm_t                shm;  // 用于记录共享内存块的相关信息
+                                    ngx_shm_zone_init_pt     init; // 共享内存初始化后的回调
+                                    void                    *tag;
+                                    void                    *sync;
+                                    ngx_uint_t               noreuse;
+                                };
+                                // 用于新增共享内存块
+                                ngx_shm_zone_t * ngx_shared_memory_add(ngx_conf_t *cf, ngx_str_t *name, size_t size, void *tag)
+                        2. 时序
+                            1. 配置解析阶段，各模块根据需要调用ngx_shared_memory_add函数，增加共享内存块，并设置初始化回调函数。
+                            2. ngx_init_cycle处理后期，统一创建所有共享内存块，并调用各个回调函数
+                            3. nginx派生子进程，子进程继承父进程的ngx_cycle_t结构体
+                            4. 子进程处理请求时，调用各模块的请求处理回调函数
+                            5. 各模块从ngx_cycle_t结构体中获取本模块共享内存块的相关信息，进而使用共享内存块
+                    3. 共享内存管理结构图
+                        ![共享内存管理结构图](%E5%85%B1%E4%BA%AB%E5%86%85%E5%AD%98%E7%AE%A1%E7%90%86%E7%BB%93%E6%9E%84%E5%9B%BE.jpg)
