@@ -1,2 +1,2 @@
 # notes
-actually notes are in different branches.
+actually notes are in other branches.
