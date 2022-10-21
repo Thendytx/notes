@@ -80,4 +80,7 @@
             默认：worker_processes 1;<br>
             如果worker进程不会出现阻塞调用， 那么应设置与CPU内核数相同的进程数， 否则应多设置一些。
         2. worker_cpu_affinity cpumask [cpumask…]
-            绑定nginx
+            绑定nginx进程到指定CPU内核， 每个进程独享内核。<br>worker_cpu_affinity配置仅对linux生效：通过系统调用shed_setaffinity()
+
+
+暂时不看了， 先看开发相关的部分(stop at page 38/ page56 on ebook)
